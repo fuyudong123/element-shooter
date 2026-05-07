@@ -36,8 +36,7 @@ canvas{display:block}
 #damageFlash{position:fixed;top:0;left:0;right:0;bottom:0;z-index:8;pointer-events:none;background:rgba(255,0,0,0);transition:background .1s ease}
 
 /* ===== 触控按钮 ===== */
-#touch-controls{position:fixed;bottom:env(safe-area-inset-bottom,12px);left:0;right:0;z-index:20;height:180px;pointer-events:none}
-#touch-controls>*{pointer-events:auto}
+#touch-controls{position:fixed;bottom:env(safe-area-inset-bottom,12px);left:0;right:0;z-index:20;height:200px}
 
 /* 摇杆底座（在左半屏定位） */
 #joystick-area{position:absolute;left:24px;bottom:10px;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,0.08);border:2px solid rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
@@ -54,10 +53,8 @@ canvas{display:block}
 
 #btn-row{display:flex;gap:8px;align-items:flex-end}
 
-/* 屏幕触控区域（透明，用于视角旋转） */
-#look-area{position:fixed;top:0;right:0;width:55%;height:100%;z-index:19;pointer-events:none;touch-action:none}
 /* 在非触屏设备上隐藏触控 */
-@media (hover:hover){#touch-controls,#look-area{display:none!important}}
+@media (hover:hover){#touch-controls{display:none!important}}
 
 /* ===== 覆盖层 ===== */
 #overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:100;background:rgba(0,0,0,0.78);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:20px env(safe-area-inset-right,20px) 20px env(safe-area-inset-left,20px)}
@@ -105,7 +102,6 @@ canvas{display:block}
         </div>
     </div>
 </div>
-<div id="look-area"></div>
 
 <!-- 覆盖层 -->
 <div id="overlay">
@@ -150,7 +146,7 @@ const overlay=$('overlay'),overlayTitle=$('overlayTitle'),startBtn=$('startBtn')
 const healthInner=$('playerHealthBarInner'),healthText=$('healthText');
 const enemyCountNum=$('enemyCountNum'),statsDiv=$('stats'),damageFlash=$('damageFlash');
 const crosshairHit=$('crosshair-hit'),killList=$('killList'),keyHints=$('key-hints');
-const joyArea=$('joystick-area'),joyKnob=$('joystick-knob'),lookArea=$('look-area');
+const joyArea=$('joystick-area'),joyKnob=$('joystick-knob');
 const btnShoot=$('btn-shoot'),btnJump=$('btn-jump'),btnCrouch=$('btn-crouch');
 
 // ============ Three.js ============
@@ -441,7 +437,7 @@ document.addEventListener('keydown',e=>{
 });
 document.addEventListener('keyup',e=>{keys[e.code]=false});
 
-// ============ 触控 ============
+// ============ 触控（文档级事件，适用 iPhone） ============
 const touch={joystick:{id:-1,dx:0,dy:0},look:{id:-1,lx:0,ly:0},shooting:false,jumping:false,crouching:false};
 
 function isTouchDevice(){return 'ontouchstart'in window||navigator.maxTouchPoints>0}
@@ -449,37 +445,80 @@ if(isTouchDevice()){
     keyHints.innerHTML='<span class="key">左摇杆</span> 移动 &nbsp;<span class="key">右滑</span> 视角 &nbsp;<span class="key">⚡</span> 射击 &nbsp;<span class="key">↑</span> 跳跃 &nbsp;<span class="key">↓</span> 下蹲';
 }
 
-// 摇杆
-joyArea.addEventListener('touchstart',e=>{
-    e.preventDefault();
-    if(touch.joystick.id>=0)return;
-    const t=e.changedTouches[0];
-    touch.joystick.id=t.identifier;
-    updateJoystick(t);
-},{passive:false});
-joyArea.addEventListener('touchmove',e=>{
-    e.preventDefault();
+// 按钮是否有触摸进行中
+let btnTouchIds={};
+
+document.addEventListener('touchstart',e=>{
+    if(gameState!=='playing')return;
+    // 按钮自己处理，我们只记录 ID 防止冲突
     for(const t of e.changedTouches){
-        if(t.identifier===touch.joystick.id)updateJoystick(t);
+        const el=document.elementFromPoint(t.clientX,t.clientY);
+        if(el&&(el.id==='btn-shoot'||el.id==='btn-jump'||el.id==='btn-crouch'||el.closest('#btn-group'))){
+            btnTouchIds[t.identifier]=true;
+            continue;
+        }
+        // 左半屏 → 摇杆（且不在按钮区）
+        if(t.clientX<window.innerWidth*0.45&&touch.joystick.id<0){
+            e.preventDefault();
+            touch.joystick.id=t.identifier;
+            updateJoystickPos(t);
+        }
+        // 右半屏 → 视角控制
+        else if(t.clientX>=window.innerWidth*0.45&&touch.look.id<0){
+            e.preventDefault();
+            touch.look.id=t.identifier;
+            touch.look.lx=t.clientX;
+            touch.look.ly=t.clientY;
+        }
     }
 },{passive:false});
-joyArea.addEventListener('touchend',e=>{
+
+document.addEventListener('touchmove',e=>{
+    if(gameState!=='playing')return;
     for(const t of e.changedTouches){
+        if(t.identifier===touch.joystick.id){
+            e.preventDefault();
+            updateJoystickPos(t);
+        }else if(t.identifier===touch.look.id){
+            e.preventDefault();
+            const dx=t.clientX-touch.look.lx;
+            const dy=t.clientY-touch.look.ly;
+            touch.look.lx=t.clientX;
+            touch.look.ly=t.clientY;
+            player.yaw-=dx*0.005;
+            player.pitch-=dy*0.005;
+            player.pitch=Math.max(-Math.PI/2+0.05,Math.min(Math.PI/2-0.05,player.pitch));
+        }
+    }
+},{passive:false});
+
+document.addEventListener('touchend',e=>{
+    for(const t of e.changedTouches){
+        delete btnTouchIds[t.identifier];
         if(t.identifier===touch.joystick.id){
             touch.joystick.id=-1;touch.joystick.dx=0;touch.joystick.dy=0;
             joyKnob.style.transform='translate(0,0)';
         }
+        if(t.identifier===touch.look.id){
+            touch.look.id=-1;
+        }
     }
 });
-joyArea.addEventListener('touchcancel',e=>{
-    touch.joystick.id=-1;touch.joystick.dx=0;touch.joystick.dy=0;
-    joyKnob.style.transform='translate(0,0)';
+document.addEventListener('touchcancel',e=>{
+    for(const t of e.changedTouches){
+        delete btnTouchIds[t.identifier];
+        if(t.identifier===touch.joystick.id){
+            touch.joystick.id=-1;touch.joystick.dx=0;touch.joystick.dy=0;
+            joyKnob.style.transform='translate(0,0)';
+        }
+        if(t.identifier===touch.look.id) touch.look.id=-1;
+    }
 });
 
-function updateJoystick(t){
+function updateJoystickPos(t){
     const rect=joyArea.getBoundingClientRect();
     const cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
-    const maxR=45;
+    const maxR=50;
     let dx=t.clientX-cx,dy=t.clientY-cy;
     const dist=Math.sqrt(dx*dx+dy*dy);
     if(dist>maxR){dx=dx/dist*maxR;dy=dy/dist*maxR;}
@@ -487,43 +526,15 @@ function updateJoystick(t){
     joyKnob.style.transform=`translate(${dx}px,${dy}px)`;
 }
 
-// 视角触控
-lookArea.addEventListener('touchstart',e=>{
-    if(touch.look.id>=0)return;
-    const t=e.changedTouches[0];
-    touch.look.id=t.identifier;
-    touch.look.lx=t.clientX;touch.look.ly=t.clientY;
-},{passive:true});
-lookArea.addEventListener('touchmove',e=>{
-    for(const t of e.changedTouches){
-        if(t.identifier===touch.look.id){
-            const dx=t.clientX-touch.look.lx;
-            const dy=t.clientY-touch.look.ly;
-            touch.look.lx=t.clientX;touch.look.ly=t.clientY;
-            player.yaw-=dx*0.005;
-            player.pitch-=dy*0.005;
-            player.pitch=Math.max(-Math.PI/2+0.05,Math.min(Math.PI/2-0.05,player.pitch));
-        }
-    }
-},{passive:true});
-lookArea.addEventListener('touchend',e=>{
-    for(const t of e.changedTouches){
-        if(t.identifier===touch.look.id)touch.look.id=-1;
-    }
-});
-lookArea.addEventListener('touchcancel',()=>{touch.look.id=-1});
-
-// 按钮
-btnShoot.addEventListener('touchstart',e=>{e.preventDefault();touch.shooting=true;btnShoot.classList.add('pressed')},{passive:false});
-btnShoot.addEventListener('touchend',e=>{e.preventDefault();touch.shooting=false;btnShoot.classList.remove('pressed')},{passive:false});
+// 按钮事件（独立处理）
+btnShoot.addEventListener('touchstart',e=>{e.stopPropagation();touch.shooting=true;btnShoot.classList.add('pressed')},{passive:false});
+btnShoot.addEventListener('touchend',e=>{e.stopPropagation();touch.shooting=false;btnShoot.classList.remove('pressed')},{passive:false});
 btnShoot.addEventListener('touchcancel',()=>{touch.shooting=false;btnShoot.classList.remove('pressed')});
-
-btnJump.addEventListener('touchstart',e=>{e.preventDefault();touch.jumping=true;btnJump.classList.add('pressed')},{passive:false});
-btnJump.addEventListener('touchend',e=>{e.preventDefault();touch.jumping=false;btnJump.classList.remove('pressed')},{passive:false});
+btnJump.addEventListener('touchstart',e=>{e.stopPropagation();touch.jumping=true;btnJump.classList.add('pressed')},{passive:false});
+btnJump.addEventListener('touchend',e=>{e.stopPropagation();touch.jumping=false;btnJump.classList.remove('pressed')},{passive:false});
 btnJump.addEventListener('touchcancel',()=>{touch.jumping=false;btnJump.classList.remove('pressed')});
-
-btnCrouch.addEventListener('touchstart',e=>{e.preventDefault();touch.crouching=true;btnCrouch.classList.add('pressed')},{passive:false});
-btnCrouch.addEventListener('touchend',e=>{e.preventDefault();touch.crouching=false;btnCrouch.classList.remove('pressed')},{passive:false});
+btnCrouch.addEventListener('touchstart',e=>{e.stopPropagation();touch.crouching=true;btnCrouch.classList.add('pressed')},{passive:false});
+btnCrouch.addEventListener('touchend',e=>{e.stopPropagation();touch.crouching=false;btnCrouch.classList.remove('pressed')},{passive:false});
 btnCrouch.addEventListener('touchcancel',()=>{touch.crouching=false;btnCrouch.classList.remove('pressed')});
 
 // 鼠标
